@@ -31,14 +31,13 @@ def save_users(users):
     except:
         pass
 
-def add_user(user_id, username):
+def add_user(user_id, name):
     users = load_users()
     for u in users:
         if u["id"] == user_id:
             return False, len(users)
-    users.append({"id": user_id, "username": username or "no_username"})
+    users.append({"id": user_id, "username": name or "Unknown"})
     save_users(users)
-    # Also add to CHAT_IDS so they get alerts
     CHAT_IDS.add(user_id)
     return True, len(users)
 
@@ -91,10 +90,8 @@ def get_signal(name, symbol, pip_value, short=False):
     tp1_dist = a * 2.0
     tp2_dist = a * 3.0
     tp3_dist = a * 4.5
-
     is_buy = price > e9 > e21
     is_sell = price < e9 < e21
-
     if is_buy and r < 68:
         direction = "🟢 BUY"; action="BUY"; entry=price; sl=entry-sl_dist; tp1=entry+tp1_dist; tp2=entry+tp2_dist; tp3=entry+tp3_dist
         confidence = "HIGH" if r > 50 else "MEDIUM"
@@ -103,7 +100,6 @@ def get_signal(name, symbol, pip_value, short=False):
         confidence = "HIGH" if r < 50 else "MEDIUM"
     else:
         action="WAIT"; direction="🟡 WAIT"; entry=price; sl=price; tp1=price; tp2=price; tp3=price; confidence="LOW"
-
     now = datetime.now(SA_TZ).strftime('%H:%M %d %b')
     if action=="WAIT":
         if short: return None
@@ -146,10 +142,10 @@ def get_news_text():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     CHAT_IDS.add(update.effective_chat.id)
-    is_new, total = add_user(user.id, user.username)
+    is_new, total = add_user(user.id, user.first_name)
     if is_new and user.id != ADMIN_ID:
         try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=f"🔥 NEW JOIN!\n@{user.username}\nID: {user.id}\nTotal Joined: {total}")
+            await context.bot.send_message(chat_id=ADMIN_ID, text=f"🔥 NEW JOIN!\nName: {user.first_name}\nID: {user.id}\nTotal Joined: {total}")
         except:
             pass
     await update.message.reply_text(
@@ -172,28 +168,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def gold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
-    add_user(update.effective_user.id, update.effective_user.username)
+    add_user(update.effective_user.id, update.effective_user.first_name)
     await update.message.reply_text("⏳ Scanning GOLD...")
     try: await update.message.reply_text(get_signal("GOLD / XAUUSD", "GC=F", 0.1))
     except Exception as e: await update.message.reply_text(f"Gold error: {e}")
 
 async def us30(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
-    add_user(update.effective_user.id, update.effective_user.username)
+    add_user(update.effective_user.id, update.effective_user.first_name)
     await update.message.reply_text("⏳ Scanning US30...")
     try: await update.message.reply_text(get_signal("US30", "^DJI", 1))
     except Exception as e: await update.message.reply_text(f"US30 error: {e}")
 
 async def nas100(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
-    add_user(update.effective_user.id, update.effective_user.username)
+    add_user(update.effective_user.id, update.effective_user.first_name)
     await update.message.reply_text("⏳ Scanning NAS100...")
     try: await update.message.reply_text(get_signal("NAS100", "^NDX", 1))
     except Exception as e: await update.message.reply_text(f"NAS100 error: {e}")
 
 async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CHAT_IDS.add(update.effective_chat.id)
-    add_user(update.effective_user.id, update.effective_user.username)
+    add_user(update.effective_user.id, update.effective_user.first_name)
     await update.message.reply_text("⏳ Scanning ALL...")
     for name, sym, pip in [("GOLD", "GC=F", 0.1), ("US30", "^DJI", 1), ("NAS100", "^NDX", 1)]:
         try: await update.message.reply_text(get_signal(name, sym, pip))
@@ -226,7 +222,7 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Not for you bro 😅")
         return
     users = load_users()
-    last_5 = "\n".join([f"@{u['username']}" for u in users[-5:]]) if users else "No one yet"
+    last_5 = "\n".join([f"{u['username']}" for u in users[-5:]]) if users else "No one yet"
     await update.message.reply_text(f"📊 SOWETO PULSE STATS\n\nTotal Joined: {len(users)}\n\nLast 5:\n{last_5}")
 
 async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -239,7 +235,6 @@ async def send_to_all(app, text):
         except: pass
 
 def main():
-    # Load old users into CHAT_IDS on startup
     for u in load_users():
         CHAT_IDS.add(u["id"])
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -247,64 +242,4 @@ def main():
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("xauusd", gold))
     app.add_handler(CommandHandler("us30", us30))
-    app.add_handler(CommandHandler("nas100", nas100))
-    app.add_handler(CommandHandler("nasdaq", nas100))
-    app.add_handler(CommandHandler("market", market))
-    app.add_handler(CommandHandler("signal", market))
-    app.add_handler(CommandHandler("news", news))
-    app.add_handler(CommandHandler("alerts", alerts))
-    app.add_handler(CommandHandler("session", session_cmd))
-    app.add_handler(CommandHandler("risk", risk_cmd))
-    app.add_handler(CommandHandler("stats", stats_cmd))
-    app.add_handler(CommandHandler("myid", myid_cmd))
-
-    scheduler = BackgroundScheduler(timezone="Africa/Johannesburg")
-
-    try:
-        job_queue = app.job_queue
-
-        async def morning_briefing(context):
-            text = "☀️ MORNING BRIEFING - SOWETO PULSE\n\n"
-            for name, sym, pip in [("GOLD", "GC=F", 0.1), ("US30", "^DJI", 1), ("NAS100", "^NDX", 1)]:
-                try:
-                    s = get_signal(name, sym, pip)
-                    text += s + "\n\n---\n\n"
-                except: pass
-            text += get_news_text()
-            for cid in list(CHAT_IDS):
-                try: await context.bot.send_message(chat_id=cid, text=text[:4000])
-                except: pass
-
-        async def auto_signal_check(context):
-            for name, sym, pip in [("GOLD", "GC=F", 0.1), ("US30", "^DJI", 1), ("NAS100", "^NDX", 1)]:
-                try:
-                    s = get_signal(name, sym, pip, short=True)
-                    if s:
-                        for cid in list(CHAT_IDS):
-                            try: await context.bot.send_message(chat_id=cid, text=f"🚨 AUTO ALERT 🚨\n\n{s}")
-                            except: pass
-                except: pass
-
-        async def ny_open_alert(context):
-            for cid in list(CHAT_IDS):
-                try: await context.bot.send_message(chat_id=cid, text="🇺🇸 NY OPEN IN 5 MINS! 15:30 SA\n\nBest time for US30 & NAS100.\nCheck /market now!\nCheck /news for RED news first!")
-                except: pass
-
-        async def news_warning(context):
-            for cid in list(CHAT_IDS):
-                try: await context.bot.send_message(chat_id=cid, text="⚠️ NEWS CHECK\n\n" + get_news_text())
-                except: pass
-
-        job_queue.run_daily(morning_briefing, time=datetime.strptime("09:00", "%H:%M").time(), days=(0,1,2,3,4), name="morning")
-        job_queue.run_repeating(auto_signal_check, interval=1800, first=10, name="auto")
-        job_queue.run_daily(ny_open_alert, time=datetime.strptime("15:25", "%H:%M").time(), days=(0,1,2,3,4), name="nyopen")
-        job_queue.run_daily(news_warning, time=datetime.strptime("15:00", "%H:%M").time(), days=(0,1,2,3,4), name="newswarn")
-        print("Scheduler: JobQueue ON - Auto alerts active")
-    except Exception as e:
-        print(f"JobQueue not available, using fallback: {e}")
-
-    print("Soweto Pulse V4 FINAL BOSS started...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+    app.add_handler

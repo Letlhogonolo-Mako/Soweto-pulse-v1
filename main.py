@@ -242,4 +242,56 @@ def main():
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("xauusd", gold))
     app.add_handler(CommandHandler("us30", us30))
-    app.add_handler
+    app.add_handler(CommandHandler("nas100", nas100))
+    app.add_handler(CommandHandler("nasdaq", nas100))
+    app.add_handler(CommandHandler("market", market))
+    app.add_handler(CommandHandler("signal", market))
+    app.add_handler(CommandHandler("news", news))
+    app.add_handler(CommandHandler("alerts", alerts))
+    app.add_handler(CommandHandler("session", session_cmd))
+    app.add_handler(CommandHandler("risk", risk_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("myid", myid_cmd))
+    scheduler = BackgroundScheduler(timezone="Africa/Johannesburg")
+    try:
+        job_queue = app.job_queue
+        async def morning_briefing(context):
+            text = "☀️ MORNING BRIEFING - SOWETO PULSE\n\n"
+            for name, sym, pip in [("GOLD", "GC=F", 0.1), ("US30", "^DJI", 1), ("NAS100", "^NDX", 1)]:
+                try:
+                    s = get_signal(name, sym, pip)
+                    text += s + "\n\n---\n\n"
+                except: pass
+            text += get_news_text()
+            for cid in list(CHAT_IDS):
+                try: await context.bot.send_message(chat_id=cid, text=text[:4000])
+                except: pass
+        async def auto_signal_check(context):
+            for name, sym, pip in [("GOLD", "GC=F", 0.1), ("US30", "^DJI", 1), ("NAS100", "^NDX", 1)]:
+                try:
+                    s = get_signal(name, sym, pip, short=True)
+                    if s:
+                        for cid in list(CHAT_IDS):
+                            try: await context.bot.send_message(chat_id=cid, text=f"🚨 AUTO ALERT 🚨\n\n{s}")
+                            except: pass
+                except: pass
+        async def ny_open_alert(context):
+            for cid in list(CHAT_IDS):
+                try: await context.bot.send_message(chat_id=cid, text="🇺🇸 NY OPEN IN 5 MINS! 15:30 SA\n\nBest time for US30 & NAS100.\nCheck /market now!\nCheck /news for RED news first!")
+                except: pass
+        async def news_warning(context):
+            for cid in list(CHAT_IDS):
+                try: await context.bot.send_message(chat_id=cid, text="⚠️ NEWS CHECK\n\n" + get_news_text())
+                except: pass
+        job_queue.run_daily(morning_briefing, time=datetime.strptime("09:00", "%H:%M").time(), days=(0,1,2,3,4), name="morning")
+        job_queue.run_repeating(auto_signal_check, interval=1800, first=10, name="auto")
+        job_queue.run_daily(ny_open_alert, time=datetime.strptime("15:25", "%H:%M").time(), days=(0,1,2,3,4), name="nyopen")
+        job_queue.run_daily(news_warning, time=datetime.strptime("15:00", "%H:%M").time(), days=(0,1,2,3,4), name="newswarn")
+        print("Scheduler: JobQueue ON - Auto alerts active")
+    except Exception as e:
+        print(f"JobQueue not available, using fallback: {e}")
+    print("Soweto Pulse V4 FINAL BOSS started...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()

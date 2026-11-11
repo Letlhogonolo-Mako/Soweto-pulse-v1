@@ -1,297 +1,97 @@
-import os
-import json
-import requests
+import os, json, requests
 from datetime import datetime, timedelta
 import pytz
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from apscheduler.schedulers.background import BackgroundScheduler
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SA_TZ = pytz.timezone("Africa/Johannesburg")
+MEMORY_FILE = "memory.json"
 
-# --- TRACKER - SOWETO PULSE ---
-ADMIN_ID = 8819891412
-USERS_FILE = "users.json"
-CHAT_IDS = set()
-
-def load_users():
-    if os.path.exists(USERS_FILE):
-        try:
-            with open(USERS_FILE, "r") as f:
-                return json.load(f)
-        except:
-            return []
-    return []
-
-def save_users(users):
+def load_memory():
     try:
-        with open(USERS_FILE, "w") as f:
-            json.dump(users, f)
-    except:
-        pass
+        with open(MEMORY_FILE) as f: return json.load(f)
+    except: return {"last_signals": {}, "wins": 0, "losses": 0}
+def save_memory(m):
+    try:
+        with open(MEMORY_FILE,"w") as f: json.dump(m,f)
+    except: pass
+memory = load_memory()
 
-def add_user(user_id, name):
-    users = load_users()
-    for u in users:
-        if u["id"] == user_id:
-            return False, len(users)
-    users.append({"id": user_id, "username": name or "Unknown"})
-    save_users(users)
-    CHAT_IDS.add(user_id)
-    return True, len(users)
+# SYMBOLS - Yahoo Finance
+PAIRS = {
+    "GOLD": ("GC=F", 0.1),
+    "US30": ("^DJI", 1),
+    "NAS100": ("^NDX", 1),
+    "USTECH": ("^NDX", 1),
+    "EURUSD": ("EURUSD=X", 0.0001),
+    "GBPUSD": ("GBPUSD=X", 0.0001),
+}
 
-def get_data(symbol):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=15m"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, timeout=15).json()
-    result = r["chart"]["result"][0]
-    closes = [c for c in result["indicators"]["quote"][0]["close"] if c is not None]
-    highs = [h for h in result["indicators"]["quote"][0]["high"] if h is not None]
-    lows = [l for l in result["indicators"]["quote"][0]["low"] if l is not None]
+def get_data(symbol, range_="5d", interval="15m"):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
+    r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=15).json()
+    res = r["chart"]["result"][0]
+    q = res["indicators"]["quote"][0]
+    closes=[c for c in q["close"] if c is not None]
+    highs=[h for h in q["high"] if h is not None]
+    lows=[l for l in q["low"] if l is not None]
     return closes, highs, lows
 
-def rsi(closes, period=14):
-    if len(closes) < period+1: return 50
-    gains, losses = [], []
-    for i in range(1, period+1):
-        diff = closes[-i] - closes[-i-1]
-        if diff > 0: gains.append(diff)
-        else: losses.append(abs(diff))
-    avg_gain = sum(gains)/period if gains else 0
-    avg_loss = sum(losses)/period if losses else 0.0001
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+def rsi(closes, p=14):
+    if len(closes)<p+1: return 50
+    gains=[]; losses=[]
+    for i in range(1,p+1):
+        d=closes[-i]-closes[-i-1]
+        (gains if d>0 else losses).append(abs(d))
+    ag=sum(gains)/p if gains else 0; al=sum(losses)/p if losses else 0.0001
+    return 100-(100/(1+ag/al))
 
-def ema(closes, period):
-    if len(closes) < period: return closes[-1]
-    k = 2/(period+1)
-    e = closes[-period]
-    for price in closes[-period:]:
-        e = price*k + e*(1-k)
+def ema(closes,p):
+    if len(closes)<p: return closes[-1]
+    k=2/(p+1); e=closes[-p]
+    for price in closes[-p:]: e=price*k+e*(1-k)
     return e
 
-def atr(highs, lows, closes, period=14):
-    trs = []
-    for i in range(1, min(len(closes), period+1)):
-        tr = max(highs[-i]-lows[-i], abs(highs[-i]-closes[-i-1]), abs(lows[-i]-closes[-i-1]))
-        trs.append(tr)
+def atr(highs,lows,closes,p=14):
+    trs=[]
+    for i in range(1,min(len(closes),p+1)):
+        trs.append(max(highs[-i]-lows[-i], abs(highs[-i]-closes[-i-1]), abs(lows[-i]-closes[-i-1])))
     return sum(trs)/len(trs) if trs else closes[-1]*0.001
 
-def get_signal(name, symbol, pip_value, short=False):
-    closes, highs, lows = get_data(symbol)
-    price = closes[-1]
-    r = rsi(closes)
-    e9 = ema(closes, 9)
-    e21 = ema(closes, 21)
-    e50 = ema(closes, 50)
-    a = atr(highs, lows, closes)
-    sl_dist = a * 1.5
-    tp1_dist = a * 2.0
-    tp2_dist = a * 3.0
-    tp3_dist = a * 4.5
-    is_buy = price > e9 > e21
-    is_sell = price < e9 < e21
-    if is_buy and r < 68:
-        direction = "🟢 BUY"; action="BUY"; entry=price; sl=entry-sl_dist; tp1=entry+tp1_dist; tp2=entry+tp2_dist; tp3=entry+tp3_dist
-        confidence = "HIGH" if r > 50 else "MEDIUM"
-    elif is_sell and r > 32:
-        direction = "🔴 SELL"; action="SELL"; entry=price; sl=entry+sl_dist; tp1=entry-tp1_dist; tp2=entry-tp2_dist; tp3=entry-tp3_dist
-        confidence = "HIGH" if r < 50 else "MEDIUM"
-    else:
-        action="WAIT"; direction="🟡 WAIT"; entry=price; sl=price; tp1=price; tp2=price; tp3=price; confidence="LOW"
-    now = datetime.now(SA_TZ).strftime('%H:%M %d %b')
-    if action=="WAIT":
-        if short: return None
-        return f"📊 {name}\n🕐 {now} SA\n💰 {price:,.2f}\n{direction} - RSI {r:.1f} - No trade, wait."
-    else:
-        return (
-            f"🔥 {name} SIGNAL 🔥\n🕐 {now} SA Time\n\n"
-            f"{direction} {name}\nConfidence: {confidence}\n\n"
-            f"🎯 ENTRY: {entry:,.2f}\n"
-            f"🛑 SL: {sl:,.2f}\n"
-            f"✅ TP1: {tp1:,.2f}\n"
-            f"✅ TP2: {tp2:,.2f}\n"
-            f"🚀 TP3: {tp3:,.2f}\n\n"
-            f"📐 RSI: {r:.1f} | EMA9: {e9:,.2f} | EMA21: {e21:,.2f}\n"
-            f"💡 Move SL to breakeven at TP1.\n"
-            f"⚠️ 1-2% risk only. Not financial advice."
-        )
-
-def get_news_text():
+def get_news_today():
     try:
-        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-        r = requests.get(url, timeout=10).json()
-        today = datetime.now(SA_TZ).strftime("%Y-%m-%d")
-        events = [e for e in r if e.get("date")==today and e.get("impact")=="High"]
-        if not events:
-            return "📰 TODAY: No HIGH impact news. Good for technical trading."
-        msg = "📰 TODAY'S RED NEWS (SA Time)\n\n"
-        for e in events[:10]:
-            try:
-                t = datetime.strptime(e["time"], "%I:%M%p")
-                sa_t = (t + timedelta(hours=7)).strftime("%H:%M")
-            except: sa_t = e["time"]
-            msg += f"⏰ {sa_t} - {e['country']} {e['title']} | Fcst: {e.get('forecast','-')}\n\n"
-        msg += "⚠️ Don't trade 15min before/after RED news!"
-        return msg
-    except:
-        return "📰 News: Check ForexFactory.com - Avoid NFP/CPI/FOMC 15:30 SA"
+        url="https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        r=requests.get(url,timeout=10).json()
+        today=datetime.now(SA_TZ).strftime("%Y-%m-%d")
+        return [e for e in r if e.get("date")==today and e.get("impact")=="High"]
+    except: return []
 
-# --- COMMANDS ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    CHAT_IDS.add(update.effective_chat.id)
-    is_new, total = add_user(user.id, user.first_name)
-    if is_new and user.id != ADMIN_ID:
+def is_news_time():
+    # Don't trade 30min before/after high impact news
+    events=get_news_today()
+    now=datetime.now(SA_TZ)
+    for e in events:
         try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=f"🔥 NEW JOIN!\nName: {user.first_name}\nID: {user.id}\nTotal Joined: {total}")
-        except:
-            pass
-    await update.message.reply_text(
-        "🔥 SOWETO PULSE V4 - FINAL BOSS 🔥\n\n"
-        "✅ AUTO-ALERTS ON! You will now get:\n"
-        "• 09:00 Morning Briefing\n"
-        "• Auto signals 10:00-19:00\n"
-        "• RED news warnings\n"
-        "• NY Open alert 15:30\n\n"
-        "Commands:\n"
-        "/gold - GOLD Signal + TP/SL\n"
-        "/us30 - US30 Signal + TP/SL\n"
-        "/nas100 - NAS100 Signal + TP/SL\n"
-        "/market - All 3\n"
-        "/news - Today's News\n"
-        "/alerts - Check if alerts are ON\n"
-        "/session - Sessions\n"
-        "/risk - Risk Rules"
-    )
-
-async def gold(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    CHAT_IDS.add(update.effective_chat.id)
-    add_user(update.effective_user.id, update.effective_user.first_name)
-    await update.message.reply_text("⏳ Scanning GOLD...")
-    try: await update.message.reply_text(get_signal("GOLD / XAUUSD", "GC=F", 0.1))
-    except Exception as e: await update.message.reply_text(f"Gold error: {e}")
-
-async def us30(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    CHAT_IDS.add(update.effective_chat.id)
-    add_user(update.effective_user.id, update.effective_user.first_name)
-    await update.message.reply_text("⏳ Scanning US30...")
-    try: await update.message.reply_text(get_signal("US30", "^DJI", 1))
-    except Exception as e: await update.message.reply_text(f"US30 error: {e}")
-
-async def nas100(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    CHAT_IDS.add(update.effective_chat.id)
-    add_user(update.effective_user.id, update.effective_user.first_name)
-    await update.message.reply_text("⏳ Scanning NAS100...")
-    try: await update.message.reply_text(get_signal("NAS100", "^NDX", 1))
-    except Exception as e: await update.message.reply_text(f"NAS100 error: {e}")
-
-async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    CHAT_IDS.add(update.effective_chat.id)
-    add_user(update.effective_user.id, update.effective_user.first_name)
-    await update.message.reply_text("⏳ Scanning ALL...")
-    for name, sym, pip in [("GOLD", "GC=F", 0.1), ("US30", "^DJI", 1), ("NAS100", "^NDX", 1)]:
-        try: await update.message.reply_text(get_signal(name, sym, pip))
-        except: await update.message.reply_text(f"{name} - no data")
-
-async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Fetching news...")
-    await update.message.reply_text(get_news_text())
-
-async def alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    CHAT_IDS.add(update.effective_chat.id)
-    await update.message.reply_text(
-        f"🔔 ALERTS: ON ✅\n\n"
-        f"You are subscribed.\n"
-        f"Morning Briefing: 09:00 SA\n"
-        f"Auto Signals: Every 30min 10:00-19:00\n"
-        f"News Warnings: Before RED news\n"
-        f"NY Open: 15:30 SA\n\n"
-        f"Keep Telegram open - bot will ping you."
-    )
-
-async def session_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🕐 SESSIONS SA:\nLondon 10:00-18:00\nNY 15:30-00:00\n🔥 GOLD BEST: 15:30-18:00\n🔥 US30/NAS100 BEST: 15:30-19:00")
-
-async def risk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💰 RISK:\nRisk 1-2% only\nMove SL to breakeven at TP1\nTake 50% at TP1, rest to TP2\nMax 2 trades/day")
-
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Not for you bro 😅")
-        return
-    users = load_users()
-    last_5 = "\n".join([f"{u['username']}" for u in users[-5:]]) if users else "No one yet"
-    await update.message.reply_text(f"📊 SOWETO PULSE STATS\n\nTotal Joined: {len(users)}\n\nLast 5:\n{last_5}")
-
-async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Your ID is: {update.effective_user.id}")
-
-# --- AUTO JOBS ---
-async def send_to_all(app, text):
-    for cid in list(CHAT_IDS):
-        try: await app.bot.send_message(chat_id=cid, text=text)
+            t=datetime.strptime(e["time"],"%I:%M%p") + timedelta(hours=7)
+            news_time=now.replace(hour=t.hour, minute=t.minute, second=0)
+            diff=abs((now-news_time).total_seconds()/60)
+            if diff<30: return True, e['title']
         except: pass
+    return False, ""
 
-def main():
-    for u in load_users():
-        CHAT_IDS.add(u["id"])
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("gold", gold))
-    app.add_handler(CommandHandler("xauusd", gold))
-    app.add_handler(CommandHandler("us30", us30))
-    app.add_handler(CommandHandler("nas100", nas100))
-    app.add_handler(CommandHandler("nasdaq", nas100))
-    app.add_handler(CommandHandler("market", market))
-    app.add_handler(CommandHandler("signal", market))
-    app.add_handler(CommandHandler("news", news))
-    app.add_handler(CommandHandler("alerts", alerts))
-    app.add_handler(CommandHandler("session", session_cmd))
-    app.add_handler(CommandHandler("risk", risk_cmd))
-    app.add_handler(CommandHandler("stats", stats_cmd))
-    app.add_handler(CommandHandler("myid", myid_cmd))
-    scheduler = BackgroundScheduler(timezone="Africa/Johannesburg")
+def get_signal(name):
+    symbol, pip = PAIRS[name]
+    closes, highs, lows = get_data(symbol)
+    # HIGHER TIMEFRAME - 1H trend for intelligence
     try:
-        job_queue = app.job_queue
-        async def morning_briefing(context):
-            text = "☀️ MORNING BRIEFING - SOWETO PULSE\n\n"
-            for name, sym, pip in [("GOLD", "GC=F", 0.1), ("US30", "^DJI", 1), ("NAS100", "^NDX", 1)]:
-                try:
-                    s = get_signal(name, sym, pip)
-                    text += s + "\n\n---\n\n"
-                except: pass
-            text += get_news_text()
-            for cid in list(CHAT_IDS):
-                try: await context.bot.send_message(chat_id=cid, text=text[:4000])
-                except: pass
-        async def auto_signal_check(context):
-            for name, sym, pip in [("GOLD", "GC=F", 0.1), ("US30", "^DJI", 1), ("NAS100", "^NDX", 1)]:
-                try:
-                    s = get_signal(name, sym, pip, short=True)
-                    if s:
-                        for cid in list(CHAT_IDS):
-                            try: await context.bot.send_message(chat_id=cid, text=f"🚨 AUTO ALERT 🚨\n\n{s}")
-                            except: pass
-                except: pass
-        async def ny_open_alert(context):
-            for cid in list(CHAT_IDS):
-                try: await context.bot.send_message(chat_id=cid, text="🇺🇸 NY OPEN IN 5 MINS! 15:30 SA\n\nBest time for US30 & NAS100.\nCheck /market now!\nCheck /news for RED news first!")
-                except: pass
-        async def news_warning(context):
-            for cid in list(CHAT_IDS):
-                try: await context.bot.send_message(chat_id=cid, text="⚠️ NEWS CHECK\n\n" + get_news_text())
-                except: pass
-        job_queue.run_daily(morning_briefing, time=datetime.strptime("09:00", "%H:%M").time(), days=(0,1,2,3,4), name="morning")
-        job_queue.run_repeating(auto_signal_check, interval=1800, first=10, name="auto")
-        job_queue.run_daily(ny_open_alert, time=datetime.strptime("15:25", "%H:%M").time(), days=(0,1,2,3,4), name="nyopen")
-        job_queue.run_daily(news_warning, time=datetime.strptime("15:00", "%H:%M").time(), days=(0,1,2,3,4), name="newswarn")
-        print("Scheduler: JobQueue ON - Auto alerts active")
-    except Exception as e:
-        print(f"JobQueue not available, using fallback: {e}")
-    print("Soweto Pulse V4 FINAL BOSS started...")
-    app.run_polling()
+        closes_h,_,_ = get_data(symbol, "5d", "1h")
+        htf_trend = "UP" if closes_h[-1] > ema(closes_h,50) else "DOWN"
+    except: htf_trend="UNKNOWN"
 
-if __name__ == "__main__":
-    main()
+    price=closes[-1]; r=rsi(closes); e9=ema(closes,9); e21=ema(closes,21); e50=ema(closes,50)
+    e12=ema(closes,12); e26=ema(closes,26); macd_val=e12-e26
+    a=atr(highs,lows,closes)
+    support=min(lows[-50:]); resistance=max(highs[-50:])
+    sma20=sum(closes[-20:])/20
+    std=(sum 

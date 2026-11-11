@@ -1,4 +1,3 @@
-python-telegram-bot
+python-telegram-bot[job-queue]==21.4
 requests
-pytz
-apscheduler
+pytz 

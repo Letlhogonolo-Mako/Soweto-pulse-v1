@@ -1,5 +1,5 @@
 import os, json, requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 import pytz
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -94,8 +94,7 @@ def get_signal(name):
     std = variance ** 0.5
     upper=sma20+2*std; lower=sma20-2*std
     hour=datetime.now(SA_TZ).hour
-    in_session = 10 <= hour <= 23
-    session_name = "London+NY" if 15 <= hour <= 19 else ("London" if 10 <= hour <= 15 else ("NY" if 15 <= hour <= 23 else "Asian - SLOW"))
+    session_name = "London+NY" if 15 <= hour <= 19 else ("London" if 10 <= hour <= 15 else ("NY" if 15 <= hour <= 23 else "Asian"))
     news_block, news_title = is_news_time()
     buy=0; sell=0
     reasons_buy=[]; reasons_sell=[]
@@ -116,25 +115,34 @@ def get_signal(name):
     sl_dist=a*1.5; tp1_dist=a*2.0; tp2_dist=a*3.0; tp3_dist=a*4.5
     now=datetime.now(SA_TZ).strftime('%H:%M %d %b')
     last=memory.get("last_signals",{}).get(name,"None yet")
-    if news_block:
-        return f"⛔ {name} - DO NOT TRADE\n🕐 {now}\n\n📰 RED NEWS NOW: {news_title}\nWait 30 mins after news."
-    if not in_session:
-        return f"😴 {name} - SLOW SESSION\n🕐 {now} | Session: {session_name}\nPrice: {price:,.5f}\nWait for London/NY 10:00-23:00 SA time."
-    if buy>=5 and r<70:
+
+    # ONLY CHANGE: ALWAYS BUY OR SELL - NO WAIT - PICK STRONGER SIDE
+    if buy >= sell:
         action="BUY"; direction="🟢 BUY"; entry=price; sl=entry-sl_dist; tp1=entry+tp1_dist; tp2=entry+tp2_dist; tp3=entry+tp3_dist
-        conf="HIGH" if buy>=6 else "HIGH"; score=buy; reasons=reasons_buy
-    elif sell>=5 and r>30:
-        action="SELL"; direction="🔴 SELL"; entry=price; sl=entry+sl_dist; tp1=entry-tp1_dist; tp2=entry-tp2_dist; tp3=entry-tp3_dist
-        conf="HIGH" if sell>=6 else "HIGH"; score=sell; reasons=reasons_sell
+        score=buy; reasons=reasons_buy
+        if buy>=6: conf="HIGH 🔥🔥"
+        elif buy>=5: conf="HIGH 🔥"
+        elif buy>=3: conf="MEDIUM"
+        else: conf="LOW - Small lot only"
     else:
-        return (f"📊 {name}\n🕐 {now} | {session_name} | HTF: {htf_trend}\n\n💰 Price: {price:,.5f}\n🟡 WAIT - NO EDGE\nRSI: {r:.1f} | MACD: {macd_val:.5f}\nSupport: {support:,.5f} | Resistance: {resistance:,.5f}\nBuy Score: {buy}/7 | Sell Score: {sell}/7\n\n🧠 Need 5/7 confirmations.\n🧠 Last: {last}")
+        action="SELL"; direction="🔴 SELL"; entry=price; sl=entry+sl_dist; tp1=entry-tp1_dist; tp2=entry-tp2_dist; tp3=entry-tp3_dist
+        score=sell; reasons=reasons_sell
+        if sell>=6: conf="HIGH 🔥🔥"
+        elif sell>=5: conf="HIGH 🔥"
+        elif sell>=3: conf="MEDIUM"
+        else: conf="LOW - Small lot only"
+
     memory["last_signals"][name]=f"{action} @ {price:.5f} - {now}"
     save_memory(memory)
     def pips(v): return abs(v-entry)/pip
-    return (f"🔥 {name} MONEY SIGNAL 🔥\n🕐 {now} | {session_name} | HTF: {htf_trend}\n\n{direction} {name}\nConfidence: {conf} | Score: {score}/7\nReasons: {', '.join(reasons)}\n\n🎯 ENTRY: {entry:,.5f}\n🛑 SL: {sl:,.5f} ({pips(sl):.0f} pips)\n✅ TP1: {tp1:,.5f}\n✅ TP2: {tp2:,.5f}\n🚀 TP3: {tp3:,.5f}\n\n📐 RSI: {r:.1f} | MACD: {macd_val:.5f}\n🧱 Support: {support:,.5f} | Resistance: {resistance:,.5f}\n\n💰 RISK: 1-2% ONLY.\n🧠 Last: {last}")
+    news_warn = f"\n⚠️ RED NEWS NOW: {news_title} - Be careful!" if news_block else ""
+    return (f"🔥 {name} SIGNAL 🔥\n🕐 {now} | {session_name} | HTF: {htf_trend}{news_warn}\n\n{direction} {name}\nConfidence: {conf} | Score: {score}/7\nReasons: {', '.join(reasons) if reasons else 'Trend'}\n\n🎯 ENTRY: {entry:,.5f}\n🛑 STOP LOSS: {sl:,.5f} ({pips(sl):.0f} pips)\n✅ TP1: {tp1:,.5f} (+{pips(tp1):.0f} pips)\n✅ TP2: {tp2:,.5f} (+{pips(tp2):.0f} pips)\n🚀 TP3: {tp3:,.5f} (+{pips(tp3):.0f} pips)\n\n📐 RSI: {r:.1f} | MACD: {macd_val:.5f}\n🧱 Support: {support:,.5f} | Resistance: {resistance:,.5f}\n\n💰 RISK: 1-2% ONLY. Take 50% at TP1, move SL to breakeven.\n🧠 Last: {last}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔥 SOWETO PULSE V5.1 FIXED 🔥\n\n/gold /us30 /nas100 /ustech\n/eurusd /gbpusd\n/market /signal /news /memory /money /risk")
+    await update.message.reply_text("🔥 SOWETO PULSE V5.3 - ALWAYS BUY/SELL + TP 🔥\n\n/gold /us30 /nas100 /ustech\n/eurusd /gbpusd\n/market /signal /news /memory /money /risk /briefing")
+    memory["chat_id"] = update.effective_chat.id
+    save_memory(memory)
+
 async def send_sig(update, name):
     await update.message.reply_text(f"🧠 AI Scanning {name}...")
     try: await update.message.reply_text(get_signal(name))
@@ -162,12 +170,35 @@ async def memory_cmd(u,c):
     for k,v in mem.get("last_signals",{}).items(): txt+=f"{k}: {v}\n"
     await u.message.reply_text(txt if mem.get("last_signals") else "No signals yet. Try /eurusd")
 async def money_cmd(u,c):
-    await u.message.reply_text("💰 HOW TO MAKE MONEY:\n1. ONLY HIGH 6/7 or 7/7\n2. EURUSD/GBPUSD Best 15:30-18:00\n3. NEVER trade WAIT or NEWS BLOCK\n4. Risk 1-2% only\n5. Take 50% at TP1\n6. Max 2 trades/day")
+    await u.message.reply_text("💰 HOW TO MAKE MONEY:\n1. ONLY HIGH 6/7 or 7/7 - full lot\n2. MEDIUM - half lot\n3. LOW - skip or very small\n4. EURUSD/GBPUSD Best 15:30-18:00\n5. Risk 1-2% only\n6. Take 50% at TP1\n7. Max 2 trades/day")
 async def risk_cmd(u,c): await u.message.reply_text("💰 RISK: 1-2% per trade. R1000 = R10-R20 risk. 2 losses = STOP today.")
+async def briefing_cmd(u,c):
+    await u.message.reply_text("☀️ MORNING BRIEFING - Building...")
+    await market(u,c)
+    await news(u,c)
+async def auto_morning_briefing(context: ContextTypes.DEFAULT_TYPE):
+    mem = load_memory()
+    chat_id = mem.get("chat_id")
+    if not chat_id: return
+    try:
+        await context.bot.send_message(chat_id=chat_id, text="☀️ GOOD MORNING - 09:00 BRIEFING ☀️\n\nHere is your plan for today:")
+        for n in ["GOLD","US30","NAS100","USTECH","EURUSD","GBPUSD"]:
+            try: await context.bot.send_message(chat_id=chat_id, text=get_signal(n))
+            except: pass
+        ev = get_news_today()
+        if ev:
+            txt="📰 TODAY RED NEWS:\n"
+            for e in ev: txt+=f"{e['time']} - {e['title']}\n"
+            await context.bot.send_message(chat_id=chat_id, text=txt)
+    except: pass
+
 def main():
     app=ApplicationBuilder().token(BOT_TOKEN).build()
-    for cmd,fn in [("start",start),("gold",gold),("us30",us30),("nas100",nas100),("ustech",ustech),("eurusd",eurusd),("gbpusd",gbpusd),("market",market),("signal",signal_cmd),("news",news),("memory",memory_cmd),("money",money_cmd),("risk",risk_cmd)]:
+    for cmd,fn in [("start",start),("gold",gold),("us30",us30),("nas100",nas100),("ustech",ustech),("eurusd",eurusd),("gbpusd",gbpusd),("market",market),("signal",signal_cmd),("news",news),("memory",memory_cmd),("money",money_cmd),("risk",risk_cmd),("briefing",briefing_cmd)]:
         app.add_handler(CommandHandler(cmd,fn))
-    print("V5.1 started...")
+    try:
+        app.job_queue.run_daily(auto_morning_briefing, time=dtime(hour=7, minute=0), days=(0,1,2,3,4))
+    except: pass
+    print("V5.3 started...")
     app.run_polling()
 if __name__=="__main__": main()
